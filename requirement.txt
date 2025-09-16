@@ -5,6 +5,8 @@ tqdm
 matplotlib
 flow-vis
 librosa
+tensorboard
+pytorch_lightning
 transformers==4.30.2
 albucore==0.0.16
 torchdiffeq==0.2.5

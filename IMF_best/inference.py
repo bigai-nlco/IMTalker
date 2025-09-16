@@ -55,7 +55,7 @@ class Demo(nn.Module):
         print('==> loading data')
         self.save_path = args.save_folder
         os.makedirs(self.save_path, exist_ok=True) 
-        self.dataset_test = VFHQ_test(test_dir="E:\data\eval\self_reenactment\\vfhq", device="cuda")
+        self.dataset_test = VFHQ_test(test_dir=self.args.input_path, device="cuda")
         self.loader_test = data.DataLoader(
             self.dataset_test,
             num_workers=0,
@@ -130,6 +130,8 @@ if __name__ == '__main__':
     parser.add_argument('--window_size', type=int, default=8, help='Window size for Swin Attention.')
     parser.add_argument('--drop_path', type=float, default=0.1, help='Stochastic depth rate for Swin.')
     parser.add_argument('--low_res_depth', type=int, default=2, help='Number of TransformerBlocks for low-res features.')
+    parser.add_argument("--input_path", type=str, default='E:\\codes\\codes\\LIA\\result_test\\')
+    
     # 删除下面这行
     # parser = pl.Trainer.add_argparse_args(parser)
     
