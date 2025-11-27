@@ -436,11 +436,8 @@ with gr.Blocks(title="IMTalker Demo") as demo:
         with gr.TabItem("Audio Driven"):
             with gr.Row():
                 with gr.Column():
-                    # 1. 图片输入
                     a_img = gr.Image(label="Source Image", type="numpy", height=512, width=512)
                     
-                    # --- 图片示例 (独立) ---
-                    # 请确保 examples 文件夹下有对应的 source_x.png 文件
                     gr.Examples(
                         examples=[
                             ["assets/source_1.png"],
