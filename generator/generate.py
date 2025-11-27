@@ -50,14 +50,10 @@ class DataProcessor:
         h, w = img_arr.shape[:2]
 
         mult = 360.0 / h
-        resized_img = cv2.resize(
-            img_arr, dsize=(0, 0), fx=mult, fy=mult,
-            interpolation=cv2.INTER_AREA if mult < 1 else cv2.INTER_CUBIC
-        )
 
-        bboxes = self.fa.face_detector.detect_from_image(resized_img)
+        bboxes = self.fa.face_detector.detect_from_image(img_arr)
         valid_bboxes = [
-            (int(x1 / mult), int(y1 / mult), int(x2 / mult), int(y2 / mult), score)
+            (int(x1 ), int(y1), int(x2), int(y2), score)
             for (x1, y1, x2, y2, score) in bboxes if score > 0.95
         ]
         

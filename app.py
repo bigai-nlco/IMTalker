@@ -144,10 +144,8 @@ class DataProcessor:
         elif img_arr.shape[2] == 4:
             img_arr = cv2.cvtColor(img_arr, cv2.COLOR_RGBA2RGB)
         h, w = img_arr.shape[:2]
-        mult = 360.0 / h
-        resized_img = cv2.resize(img_arr, dsize=(0, 0), fx=mult, fy=mult, interpolation=cv2.INTER_AREA if mult < 1 else cv2.INTER_CUBIC)
         try:
-            bboxes = self.fa.face_detector.detect_from_image(resized_img)
+            bboxes = self.fa.face_detector.detect_from_image(img_arr)
             if bboxes is None or len(bboxes) == 0:
                  bboxes = self.fa.face_detector.detect_from_image(img_arr)
         except Exception as e:
@@ -155,7 +153,7 @@ class DataProcessor:
             bboxes = None
         valid_bboxes = []
         if bboxes is not None:
-            valid_bboxes = [(int(x1 / mult), int(y1 / mult), int(x2 / mult), int(y2 / mult), score) for (x1, y1, x2, y2, score) in bboxes if score > 0.5]
+            valid_bboxes = [(int(x1), int(y1), int(x2), int(y2), score) for (x1, y1, x2, y2, score) in bboxes if score > 0.5]
         if not valid_bboxes:
             print("Warning: No face detected. Using center crop.")
             cx, cy = w // 2, h // 2
@@ -412,33 +410,130 @@ def fn_video_driven(source_image, driving_video, crop, progress=gr.Progress()):
         raise gr.Error(f"Error: {e}")
 
 # Gradio Interface
-with gr.Blocks(title="IMTalker Demo (Local)") as demo:
-    gr.Markdown("# 🗣️ IMTalker: Efficient Audio-driven Talking Face Generation (Local)")
+with gr.Blocks(title="IMTalker Demo") as demo:
+    gr.Markdown("# 🗣️ IMTalker: Efficient Audio-driven Talking Face Generation")
+    
+    # 最佳实践说明
+    with gr.Accordion("💡 Best Practices (Click to read)", open=False):
+        gr.Markdown("""
+        To obtain the highest quality generation results, we recommend following these guidelines:
+
+        1.  **Input Image Composition**: 
+            Please ensure the input image features the person's head as the primary subject. Since our model is explicitly trained on facial data, it does not support full-body video generation. 
+            * The inference pipeline automatically **crops the input image** to focus on the face by default.
+            * **Note on Resolution**: The model generates video at a fixed resolution of **512×512**. Using extremely high-resolution inputs will result in downscaling, so prioritize facial clarity over raw image dimensions.
+
+        2.  **Audio Selection**: 
+            Our model was trained primarily on **English datasets**. Consequently, we recommend using **English audio** inputs to achieve the best lip-synchronization performance and naturalness.
+
+        3.  **Background Quality**: 
+            We strongly recommend using source images with **solid colored** or **blurred (bokeh)** backgrounds. Complex or highly detailed backgrounds may lead to visual artifacts or jitter in the generated video.
+        """)
+
     with gr.Tabs():
+        # ==========================
+        # Tab 1: Audio Driven
+        # ==========================
         with gr.TabItem("Audio Driven"):
             with gr.Row():
                 with gr.Column():
+                    # 1. 图片输入
                     a_img = gr.Image(label="Source Image", type="numpy", height=512, width=512)
+                    
+                    # --- 图片示例 (独立) ---
+                    # 请确保 examples 文件夹下有对应的 source_x.png 文件
+                    gr.Examples(
+                        examples=[
+                            ["assets/source_1.png"],
+                            ["assets/source_2.png"],
+                            ["assets/source_3.jpg"],
+                            ["assets/source_4.png"],
+                            ["assets/source_5.png"],
+                            ["assets/source_6.png"],
+                        ],
+                        inputs=[a_img], 
+                        label="Example Images",
+                        cache_examples=False,
+                    )
+
+                    # 2. 音频输入
                     a_aud = gr.Audio(label="Driving Audio", type="filepath")
+
+                    # --- 音频示例 (独立) ---
+                    # 请确保 examples 文件夹下有对应的 audio_x.wav 文件
+                    gr.Examples(
+                        examples=[
+                            ["assets/audio_1.wav"],
+                            ["assets/audio_2.wav"],
+                            ["assets/audio_3.wav"],
+                            ["assets/audio_4.wav"],
+                            ["assets/audio_5.wav"],
+                        ],
+                        inputs=[a_aud], 
+                        label="Example Audios",
+                        cache_examples=False,
+                    )
+                    
                     with gr.Accordion("Settings", open=True):
                         a_crop = gr.Checkbox(label="Auto Crop Face", value=True)
                         a_seed = gr.Number(label="Seed", value=42)
                         a_nfe = gr.Slider(5, 50, value=10, step=1, label="Steps (NFE)")
                         a_cfg = gr.Slider(1.0, 5.0, value=3.0, label="CFG Scale")
+                        
                     a_btn = gr.Button("Generate (Audio Driven)", variant="primary")
+                    
                 with gr.Column():
                     a_out = gr.Video(label="Result", height=512, width=512)
+            
             a_btn.click(fn_audio_driven, [a_img, a_aud, a_crop, a_seed, a_nfe, a_cfg], a_out)
 
+        # ==========================
+        # Tab 2: Video Driven
+        # ==========================
         with gr.TabItem("Video Driven"):
             with gr.Row():
                 with gr.Column():
+                    # 1. 图片输入
                     v_img = gr.Image(label="Source Image", type="numpy", height=512, width=512)
+                    
+                    # --- 图片示例 (独立) ---
+                    gr.Examples(
+                        examples=[
+                            ["assets/source_1.png"],
+                            ["assets/source_2.png"],
+                            ["assets/source_3.jpg"],
+                            ["assets/source_4.png"],
+                            ["assets/source_5.png"],
+                            ["assets/source_6.png"],
+                        ],
+                        inputs=[v_img],
+                        label="Example Images",
+                        cache_examples=False,
+                    )
+
+                    # 2. 视频输入
                     v_vid = gr.Video(label="Driving Video", sources=["upload"], height=512, width=512)
+
+                    # --- 视频示例 (独立) ---
+                    # 请确保 examples 文件夹下有对应的 driving_x.mp4 文件
+                    gr.Examples(
+                        examples=[
+                            ["assets/driving_1.mp4"],
+                            ["assets/driving_2.mp4"],
+                            ["assets/driving_3.mp4"],
+                            ["assets/driving_4.mp4"],
+                        ],
+                        inputs=[v_vid],
+                        label="Example Videos",
+                        cache_examples=False,
+                    )
+
                     v_crop = gr.Checkbox(label="Auto Crop (Both Source & Driving)", value=True)
                     v_btn = gr.Button("Generate (Video Driven)", variant="primary")
+                    
                 with gr.Column():
                     v_out = gr.Video(label="Result", height=512, width=512)
+            
             v_btn.click(fn_video_driven, [v_img, v_vid, v_crop], v_out)
 
 if __name__ == "__main__":
