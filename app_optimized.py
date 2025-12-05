@@ -329,10 +329,9 @@ class OptimizedInferenceAgent:
                     if name in clean_dict:
                         param.copy_(clean_dict[name].to(self.device))
 
-        # Convert to FP16 if requested
-        if self.opt.precision == "fp16":
-            self.renderer = self.renderer.half()
-            self.generator = self.generator.half()
+        # Note: We use torch.autocast for FP16 instead of .half()
+        # This avoids dtype mismatch issues between model components
+        # The actual dtype conversion happens in run_audio_inference via autocast context
 
         self.renderer.eval()
         self.generator.eval()
@@ -414,40 +413,45 @@ class OptimizedInferenceAgent:
     def run_audio_inference(self, img_pil, aud_path, crop, seed, nfe, cfg_scale):
         start_total = time.perf_counter()
 
-        # Process inputs
+        # Process inputs - keep in FP32, autocast handles conversion
         s_pil = self.data_processor.process_img(img_pil) if crop else img_pil.resize((self.opt.input_size, self.opt.input_size))
-        s_tensor = self.data_processor.transform(s_pil).unsqueeze(0).to(self.device, dtype=self.dtype)
+        s_tensor = self.data_processor.transform(s_pil).unsqueeze(0).to(self.device)
         a_tensor = self.data_processor.process_audio(aud_path).unsqueeze(0).to(self.device)
 
-        # Use cached source features
-        cached = self._cache_source(s_tensor)
-        f_r, g_r = cached['f_r'], cached['g_r']
-        t_lat, ta_r, m_r = cached['t_lat'], cached['ta_r'], cached['m_r']
+        # Use autocast for mixed precision - handles dtype conversions automatically
+        use_amp = self.opt.precision == "fp16"
+        amp_dtype = torch.float16 if use_amp else torch.float32
 
-        data = {
-            's': s_tensor, 'a': a_tensor,
-            'pose': None, 'cam': None, 'gaze': None,
-            'ref_x': t_lat
-        }
+        with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
+            # Use cached source features
+            cached = self._cache_source(s_tensor)
+            f_r, g_r = cached['f_r'], cached['g_r']
+            t_lat, ta_r, m_r = cached['t_lat'], cached['ta_r'], cached['m_r']
 
-        # Generate motion codes
-        gen_start = time.perf_counter()
-        torch.manual_seed(seed)
-        sample = self.generator.sample(data, a_cfg_scale=cfg_scale, nfe=nfe, seed=seed)
-        gen_time = time.perf_counter() - gen_start
+            data = {
+                's': s_tensor, 'a': a_tensor,
+                'pose': None, 'cam': None, 'gaze': None,
+                'ref_x': t_lat
+            }
 
-        # Render frames
-        render_start = time.perf_counter()
-        d_hat = []
-        T = sample.shape[1]
+            # Generate motion codes
+            gen_start = time.perf_counter()
+            torch.manual_seed(seed)
+            sample = self.generator.sample(data, a_cfg_scale=cfg_scale, nfe=nfe, seed=seed)
+            gen_time = time.perf_counter() - gen_start
 
-        for t in range(T):
-            ta_c = self.renderer.adapt(sample[:, t, ...], g_r)
-            m_c = self.renderer.latent_token_decoder(ta_c)
-            out_frame = self.renderer.decode(m_c, m_r, f_r)
-            d_hat.append(out_frame)
+            # Render frames
+            render_start = time.perf_counter()
+            d_hat = []
+            T = sample.shape[1]
 
-        render_time = time.perf_counter() - render_start
+            for t in range(T):
+                ta_c = self.renderer.adapt(sample[:, t, ...], g_r)
+                m_c = self.renderer.latent_token_decoder(ta_c)
+                out_frame = self.renderer.decode(m_c, m_r, f_r)
+                d_hat.append(out_frame)
+
+            render_time = time.perf_counter() - render_start
 
         vid_tensor = torch.stack(d_hat, dim=1).squeeze(0)
         result = self.save_video(vid_tensor, self.opt.fps, aud_path)
@@ -463,13 +467,18 @@ class OptimizedInferenceAgent:
     def run_video_inference(self, source_img_pil, driving_video_path, crop):
         start_total = time.perf_counter()
 
-        s_pil = self.data_processor.process_img(source_img_pil) if crop else source_img_pil.resize((self.opt.input_size, self.opt.input_size))
-        s_tensor = self.data_processor.transform(s_pil).unsqueeze(0).to(self.device, dtype=self.dtype)
+        # Use autocast for mixed precision
+        use_amp = self.opt.precision == "fp16"
+        amp_dtype = torch.float16 if use_amp else torch.float32
 
-        # Use cached source features
-        cached = self._cache_source(s_tensor)
-        f_r, i_r = cached['f_r'], cached['g_r']
-        ta_r, ma_r = cached['ta_r'], cached['m_r']
+        s_pil = self.data_processor.process_img(source_img_pil) if crop else source_img_pil.resize((self.opt.input_size, self.opt.input_size))
+        s_tensor = self.data_processor.transform(s_pil).unsqueeze(0).to(self.device)
+
+        with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
+            # Use cached source features
+            cached = self._cache_source(s_tensor)
+            f_r, i_r = cached['f_r'], cached['g_r']
+            ta_r, ma_r = cached['ta_r'], cached['m_r']
 
         # Handle video cropping
         final_driving_path = driving_video_path
@@ -487,20 +496,21 @@ class OptimizedInferenceAgent:
         frame_count = 0
         render_start = time.perf_counter()
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_pil = Image.fromarray(frame).resize((self.opt.input_size, self.opt.input_size))
-            d_tensor = self.data_processor.transform(frame_pil).unsqueeze(0).to(self.device, dtype=self.dtype)
+        with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame_pil = Image.fromarray(frame).resize((self.opt.input_size, self.opt.input_size))
+                d_tensor = self.data_processor.transform(frame_pil).unsqueeze(0).to(self.device)
 
-            t_c = self.renderer.latent_token_encoder(d_tensor)
-            ta_c = self.renderer.adapt(t_c, i_r)
-            ma_c = self.renderer.latent_token_decoder(ta_c)
-            out = self.renderer.decode(ma_c, ma_r, f_r)
-            vid_results.append(out.cpu())
-            frame_count += 1
+                t_c = self.renderer.latent_token_encoder(d_tensor)
+                ta_c = self.renderer.adapt(t_c, i_r)
+                ma_c = self.renderer.latent_token_decoder(ta_c)
+                out = self.renderer.decode(ma_c, ma_r, f_r)
+                vid_results.append(out.cpu())
+                frame_count += 1
 
         cap.release()
         render_time = time.perf_counter() - render_start
