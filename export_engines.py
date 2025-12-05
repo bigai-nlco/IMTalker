@@ -229,11 +229,15 @@ def export_compile_cache(renderer: nn.Module, config: ModelConfig, output_dir: s
 
 def export_tensorrt(renderer: nn.Module, config: ModelConfig, output_dir: str) -> bool:
     """
-    Export to TensorRT using torch_tensorrt.
+    Export to TensorRT .engine format.
 
     This provides maximum inference performance but requires:
     - Static or bounded dynamic shapes
     - Operations supported by TensorRT
+
+    Exports both:
+    1. .engine files (native TensorRT format, fastest)
+    2. .ts files (TorchScript with embedded TRT, easier to use)
     """
     try:
         import torch_tensorrt
@@ -242,65 +246,63 @@ def export_tensorrt(renderer: nn.Module, config: ModelConfig, output_dir: str) -
         return False
 
     os.makedirs(output_dir, exist_ok=True)
-    device = config.device
 
     logger.info("Exporting to TensorRT...")
 
-    x = torch.randn(1, 3, INPUT_SIZE, INPUT_SIZE, device=device)
+    # Get proper inputs for each component
+    component_inputs = get_component_inputs(renderer, config)
 
-    # TensorRT compile settings
-    compile_settings = {
-        "inputs": [
-            torch_tensorrt.Input(
-                min_shape=[1, 3, INPUT_SIZE, INPUT_SIZE],
-                opt_shape=[1, 3, INPUT_SIZE, INPUT_SIZE],
-                max_shape=[1, 3, INPUT_SIZE, INPUT_SIZE],
-                dtype=torch.float32,
-            )
-        ],
-        "enabled_precisions": {torch.float32},
-        "truncate_long_and_double": True,
-        "workspace_size": 4 << 30,  # 4GB
-    }
-
-    # Try to export individual components
+    # Components to export with their input specs
     components = [
-        ("latent_token_encoder", renderer.latent_token_encoder),
-        ("latent_token_decoder", renderer.latent_token_decoder),
+        ("dense_feature_encoder", renderer.dense_feature_encoder, [1, 3, INPUT_SIZE, INPUT_SIZE]),
+        ("latent_token_encoder", renderer.latent_token_encoder, [1, 3, INPUT_SIZE, INPUT_SIZE]),
+        ("latent_token_decoder", renderer.latent_token_decoder, None),  # Dynamic shape from adapt()
     ]
 
     success_count = 0
-    for name, module in components:
+
+    for name, module, input_shape in components:
         try:
             logger.info(f"  Converting {name} to TensorRT...")
-            trt_module = torch_tensorrt.compile(module, **compile_settings)
-            output_path = os.path.join(output_dir, f"{name}_trt.ts")
-            torch.jit.save(trt_module, output_path)
-            logger.info(f"  Exported {name} -> {output_path}")
+
+            # Get the actual input tensor for this component
+            example_input = component_inputs[name][0]
+            actual_shape = list(example_input.shape)
+
+            # Create TensorRT input spec
+            trt_input = torch_tensorrt.Input(
+                min_shape=actual_shape,
+                opt_shape=actual_shape,
+                max_shape=actual_shape,
+                dtype=torch.float32,
+            )
+
+            # Compile with dynamo (more compatible with modern PyTorch)
+            trt_module = torch_tensorrt.compile(
+                module,
+                ir="dynamo",
+                inputs=[trt_input],
+                enabled_precisions={torch.float32},
+                truncate_double=True,
+                device=torch_tensorrt.Device(gpu_id=0),
+            )
+
+            # Save as TorchScript with embedded TRT engine
+            ts_path = os.path.join(output_dir, f"{name}_trt.ts")
+            torch_tensorrt.save(trt_module, ts_path, inputs=[example_input])
+            logger.info(f"  Exported {name} -> {ts_path}")
+
+            # Also export native .engine file
+            engine_path = os.path.join(output_dir, f"{name}.engine")
+            torch_tensorrt.save(trt_module, engine_path, output_format="torchtrt")
+            logger.info(f"  Exported {name} -> {engine_path}")
+
             success_count += 1
+
         except Exception as e:
             logger.warning(f"  Failed to export {name}: {e}")
 
-    # Try dynamo backend for full model (more flexible)
-    try:
-        logger.info("  Trying torch.compile with tensorrt backend...")
-        trt_compiled = torch.compile(
-            renderer,
-            backend="torch_tensorrt",
-            options={
-                "truncate_long_and_double": True,
-                "precision": torch.float32,
-            }
-        )
-        # Warmup
-        with torch.no_grad():
-            _ = trt_compiled(x, x)
-        logger.info("  TensorRT dynamo backend compiled successfully")
-        success_count += 1
-    except Exception as e:
-        logger.warning(f"  TensorRT dynamo backend failed: {e}")
-
-    logger.info(f"TensorRT export: {success_count} components")
+    logger.info(f"TensorRT export: {success_count}/{len(components)} components")
     return success_count > 0
 
 
