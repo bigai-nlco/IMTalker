@@ -61,7 +61,7 @@ class DataProcessor:
         x1, y1, x2, y2, _ = valid_bboxes[0]
         bsy, bsx = int((y2 - y1) / 2), int((x2 - x1) / 2)
         my, mx = int((y1 + y2) / 2), int((x1 + x2) / 2)
-        bs = int(max(bsy, bsx) * 1.3)
+        bs = int(max(bsy, bsx) * 1.6)
     
         # Pad image to allow cropping outside boundaries
         img = cv2.copyMakeBorder(img, bs, bs, bs, bs, cv2.BORDER_CONSTANT, value=0)
